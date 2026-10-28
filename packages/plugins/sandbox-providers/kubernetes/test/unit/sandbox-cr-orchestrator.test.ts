@@ -53,6 +53,56 @@ describe("createSandboxCr", () => {
 });
 
 describe("getSandboxCrStatus", () => {
+  it("maps a Ready=True condition without phase to an active sandbox", async () => {
+    const get = vi.fn().mockResolvedValue({
+      status: { conditions: [{ type: "Ready", status: "True" }] },
+    });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    await expect(getSandboxCrStatus(clients as never, "ns", "pc-abc")).resolves.toEqual({
+      phase: "Running",
+      complete: false,
+      active: 1,
+      succeeded: 0,
+      failed: 0,
+    });
+  });
+
+  it.each(["False", "Unknown"])("keeps a Ready=%s condition pending", async (conditionStatus) => {
+    const get = vi.fn().mockResolvedValue({
+      status: { conditions: [{ type: "Ready", status: conditionStatus }] },
+    });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    expect(status.phase).toBe("Pending");
+    expect(status.active).toBe(0);
+  });
+
+  it.each([
+    { conditions: undefined },
+    { conditions: [] },
+    { conditions: [{ type: "PodScheduled", status: "True" }] },
+  ])(
+    "keeps a sandbox without a Ready condition pending ($conditions)",
+    async ({ conditions }) => {
+      const get = vi.fn().mockResolvedValue({ status: { conditions } });
+      const clients = { custom: { getNamespacedCustomObject: get } };
+      const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+      expect(status.phase).toBe("Pending");
+      expect(status.active).toBe(0);
+    },
+  );
+
+  it.each(["Failed", "Terminating"])("preserves phase=%s over a Ready condition", async (phase) => {
+    const get = vi.fn().mockResolvedValue({
+      status: { phase, conditions: [{ type: "Ready", status: "True" }] },
+    });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    expect(status.active).toBe(0);
+    if (phase === "Failed") expect(status.phase).toBe("Failed");
+    else expect(status.reason).toBe("Terminating");
+  });
+
   it("maps phase=Ready to SandboxStatus.phase=Running with active=1", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready"));
     const clients = { custom: { getNamespacedCustomObject: get } };
@@ -213,6 +263,35 @@ describe("deleteSandboxCr", () => {
 });
 
 describe("waitForSandboxReady", () => {
+  it("returns an active sandbox when only the Ready condition is set", async () => {
+    const get = vi.fn().mockResolvedValue({
+      status: { conditions: [{ type: "Ready", status: "True" }] },
+    });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    const status = await waitForSandboxReady(clients as never, "ns", "pc-abc", {
+      timeoutMs: 5000,
+      pollMs: 10,
+    });
+    expect(status.phase).toBe("Running");
+    expect(status.active).toBe(1);
+    expect(status.complete).toBe(false);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls a false Ready condition until it becomes true", async () => {
+    const get = vi.fn()
+      .mockResolvedValueOnce({ status: { conditions: [{ type: "Ready", status: "False" }] } })
+      .mockResolvedValueOnce({ status: { conditions: [{ type: "Ready", status: "True" }] } });
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    const status = await waitForSandboxReady(clients as never, "ns", "pc-abc", {
+      timeoutMs: 5000,
+      pollMs: 10,
+    });
+    expect(status.phase).toBe("Running");
+    expect(status.active).toBe(1);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves immediately when Sandbox is already Ready", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready"));
     const clients = { custom: { getNamespacedCustomObject: get } };

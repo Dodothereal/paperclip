@@ -49,7 +49,14 @@ function mapSandboxPhase(
   cr: Record<string, unknown>,
 ): SandboxStatus {
   const status = (cr.status as Record<string, unknown>) ?? {};
-  const phase = (status.phase as string) ?? "Pending";
+  const conditions = Array.isArray(status.conditions)
+    ? status.conditions as Array<Record<string, unknown>>
+    : [];
+  const phase = (status.phase as string) ?? (
+    conditions.some((condition) => condition.type === "Ready" && condition.status === "True")
+      ? "Ready"
+      : "Pending"
+  );
 
   switch (phase) {
     case "Ready":
